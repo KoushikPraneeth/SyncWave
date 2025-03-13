@@ -3,8 +3,11 @@ package com.audiosync.backend.controller;
 import com.audiosync.backend.model.AudioSource;
 import com.audiosync.backend.model.Device;
 import com.audiosync.backend.model.Room;
+import com.audiosync.backend.service.AudioStreamingService;
 import com.audiosync.backend.service.RoomService;
 import com.audiosync.backend.websocket.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.messaging.handler.annotation.MessageMapping;
 import org.springframework.messaging.handler.annotation.Payload;
@@ -15,14 +18,19 @@ import java.util.Optional;
 
 @Controller
 public class WebSocketController {
+    private static final Logger logger = LoggerFactory.getLogger(WebSocketController.class);
 
     private final SimpMessagingTemplate messagingTemplate;
     private final RoomService roomService;
+    private final AudioStreamingService audioStreamingService;
 
     @Autowired
-    public WebSocketController(SimpMessagingTemplate messagingTemplate, RoomService roomService) {
+    public WebSocketController(SimpMessagingTemplate messagingTemplate, 
+                              RoomService roomService,
+                              AudioStreamingService audioStreamingService) {
         this.messagingTemplate = messagingTemplate;
         this.roomService = roomService;
+        this.audioStreamingService = audioStreamingService;
     }
 
     @MessageMapping("/join")
@@ -37,7 +45,7 @@ public class WebSocketController {
             RoomInfoMessage roomInfo = new RoomInfoMessage();
             roomInfo.setRoomId(room.getId());
             roomInfo.setRoomCode(room.getCode());
-            roomInfo.setIsPlaying(room.isPlaying());
+            roomInfo.setPlaying(room.isPlaying());
             roomInfo.setCurrentTimestamp(room.getCurrentPlaybackTime());
             roomInfo.setMasterVolume(room.getMasterVolume());
             roomInfo.setAudioSource(room.getAudioSource());
@@ -85,8 +93,14 @@ public class WebSocketController {
             if (message.getDeviceId().equals(room.getHostId())) {
                 roomService.setPlaybackState(room.getId(), message.isPlaying(), message.getTimestamp());
                 
+                // Update audio streaming service about playback state change
+                audioStreamingService.updatePlaybackState(room.getId(), message.isPlaying());
+                
                 // Broadcast to all devices in the room
                 messagingTemplate.convertAndSend("/topic/room/" + room.getId() + "/playback", message);
+                
+                logger.info("Playback state updated for room {}: {}", room.getId(), 
+                        message.isPlaying() ? "playing" : "paused");
             }
         }
     }
@@ -176,5 +190,15 @@ public class WebSocketController {
             Room room = roomOpt.get();
             roomService.updateDeviceHeartbeat(room.getId(), message.getDeviceId());
         }
+    }
+    
+    /**
+     * Handle audio data streaming from the host to clients
+     * @param message Audio data message containing binary audio data and metadata
+     */
+    @MessageMapping("/audio-data")
+    public void handleAudioData(@Payload AudioDataMessage message) {
+        logger.debug("Received audio data for room: {} from device: {}", message.getRoomId(), message.getDeviceId());
+        audioStreamingService.processAudioData(message);
     }
 }

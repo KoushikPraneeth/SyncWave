@@ -31,8 +31,11 @@ export class WebSocketClient {
   private topicSubscriptions: {
     [key: string]: { [id: string]: MessageCallback };
   } = {};
+  private messageListeners: MessageCallback[] = [];
   private connected = false;
   private options: WebSocketOptions;
+  // Store the current audio source for reference
+  private currentAudioSource: any = null;
 
   constructor(options: WebSocketOptions = {}) {
     this.deviceId =
@@ -47,23 +50,92 @@ export class WebSocketClient {
     this.options = options;
   }
 
-  public connect(url: string = "ws://localhost:8080/ws"): Promise<void> {
+  public connect(url: string = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.hostname}:8080/ws`): Promise<void> {
     return new Promise((resolve, reject) => {
-      try {
-        // For demo purposes, we'll simulate a successful connection
-        // In a real implementation, you would connect to a WebSocket server
-        console.log("Simulating WebSocket connection to", url);
+      if (this.connected) {
+        resolve();
+        return;
+      }
 
-        // Simulate successful connection after a short delay
-        setTimeout(() => {
+      try {
+        this.socket = new WebSocket(url);
+
+        this.socket.onopen = () => {
+          console.log("WebSocket connected to", url);
           this.connected = true;
           if (this.options.onConnect) {
             this.options.onConnect();
           }
           resolve();
-        }, 500);
+        };
+
+        this.socket.onclose = () => {
+          console.log("WebSocket disconnected");
+          this.connected = false;
+          this.socket = null;
+          if (this.options.onDisconnect) {
+            this.options.onDisconnect();
+          }
+        };
+
+        this.socket.onmessage = (event) => {
+          try {
+            const message = JSON.parse(event.data);
+            console.log("Received message:", message);
+
+            // Notify all message listeners first
+            if (this.messageListeners.length > 0) {
+              this.messageListeners.forEach((listener) => {
+                try {
+                  listener(message);
+                } catch (error) {
+                  console.error("Error in message listener:", error);
+                }
+              });
+            }
+
+            // Handle topic-based subscriptions
+            if (message.type) {
+              const topic = message.type.toLowerCase().replace(/_/g, '-'); // Normalize topic
+              if (this.topicSubscriptions[topic]) {
+                Object.values(this.topicSubscriptions[topic]).forEach(callback => {
+                  try {
+                    callback(message);
+                  } catch (error) {
+                    console.error(`Error in topic subscription callback for ${topic}:`, error);
+                  }
+                });
+              }
+            }
+             // Handle regular subscriptions (for user-specific topics)
+             for (const subscriptionId in this.subscriptions) {
+              try {
+                this.subscriptions[subscriptionId](message); // Call each subscription callback
+              } catch (error) {
+                console.error(`Error in subscription ${subscriptionId} callback:`, error);
+              }
+            }
+
+
+          } catch (error) {
+            console.error("Error parsing message:", error);
+            if (this.options.onError) {
+              this.options.onError(error);
+            }
+          }
+        };
+
+        this.socket.onerror = (error) => {
+          console.error("WebSocket error:", error);
+          this.connected = false;
+          this.socket = null;
+          if (this.options.onError) {
+            this.options.onError(error);
+          }
+          reject(error);
+        };
       } catch (error) {
-        console.error("Error connecting to WebSocket server", error);
+        console.error("Error creating WebSocket client", error);
         if (this.options.onError) {
           this.options.onError(error);
         }
@@ -73,18 +145,17 @@ export class WebSocketClient {
   }
 
   public disconnect(): void {
-    if (this.socket) {
+    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
       this.socket.close();
-      this.socket = null;
     }
     this.connected = false;
+    this.socket = null;
     if (this.options.onDisconnect) {
       this.options.onDisconnect();
     }
   }
 
   public subscribe(destination: string, callback: MessageCallback): string {
-    // For demo purposes, we'll just store the callback
     const subscriptionId = generateUUID();
 
     // Parse the destination to determine if it's a topic subscription
@@ -94,8 +165,10 @@ export class WebSocketClient {
         this.topicSubscriptions[topic] = {};
       }
       this.topicSubscriptions[topic][subscriptionId] = callback;
-    } else {
+    } else if (destination.startsWith("/user/topic/")) {
       this.subscriptions[subscriptionId] = callback;
+    } else {
+      console.warn("Invalid destination format:", destination);
     }
 
     return subscriptionId;
@@ -118,30 +191,19 @@ export class WebSocketClient {
   }
 
   public send(destination: string, body: any): void {
-    console.log(`Simulating sending message to ${destination}:`, body);
-
-    // For demo purposes, we'll simulate responses for certain messages
-    if (destination === "/app/join") {
-      // Simulate room join response
-      setTimeout(() => {
-        const roomInfo = {
-          id: generateUUID(),
-          code: body.roomCode || "DEMO123",
-          hostId: this.deviceId,
-          isPlaying: false,
-          currentTimestamp: 0,
-          masterVolume: 80,
-          audioSource: null,
-        };
-
-        // Find the callback for user topic room
-        const callback = this.subscriptions["/user/topic/room"];
-        if (callback) {
-          callback(roomInfo);
-        }
-      }, 300);
+    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+      const message = {
+        ...body,
+        type: destination.substring(destination.lastIndexOf('/') + 1).toUpperCase() // Infer message type from destination
+      };
+      const jsonMessage = JSON.stringify(message);
+      console.log(`Sending message to ${destination}:`, jsonMessage);
+      this.socket.send(jsonMessage);
+    } else {
+      console.error("WebSocket is not connected. Cannot send message to", destination);
     }
   }
+
 
   public getDeviceId(): string {
     return this.deviceId;
@@ -149,6 +211,22 @@ export class WebSocketClient {
 
   public isConnected(): boolean {
     return this.connected;
+  }
+
+  public addMessageListener(callback: MessageCallback): void {
+    console.log("Adding message listener, current count:", this.messageListeners.length);
+    this.messageListeners.push(callback);
+  }
+
+  public removeMessageListener(callback: MessageCallback): void {
+    console.log("Attempting to remove message listener, current count:", this.messageListeners.length);
+    const index = this.messageListeners.indexOf(callback);
+    if (index !== -1) {
+      this.messageListeners.splice(index, 1);
+      console.log("Message listener removed, new count:", this.messageListeners.length);
+    } else {
+      console.warn("Could not find message listener to remove");
+    }
   }
 }
 

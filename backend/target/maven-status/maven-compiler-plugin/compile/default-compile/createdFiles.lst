@@ -1,0 +1,3 @@
+com/audiosync/backend/websocket/JoinRoomMessage.class
+com/audiosync/backend/model/ConnectionQuality.class
+com/audiosync/backend/websocket/LatencyMessage.class

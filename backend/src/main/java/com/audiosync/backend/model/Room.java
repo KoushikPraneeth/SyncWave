@@ -1,12 +1,16 @@
 package com.audiosync.backend.model;
 
 import lombok.Data;
+import lombok.Getter;
+import lombok.Setter;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
 @Data
+@Getter
+@Setter
 public class Room {
     private String id;
     private String code;
@@ -31,7 +35,16 @@ public class Room {
     }
 
     private String generateRoomCode() {
-        return UUID.randomUUID().toString().substring(0, 6).toUpperCase();
+        // Generate a simpler, more readable room code (6 characters, alphanumeric)
+        String chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // Removed similar looking characters
+        StringBuilder code = new StringBuilder();
+        java.util.Random random = new java.util.Random();
+        
+        for (int i = 0; i < 6; i++) {
+            code.append(chars.charAt(random.nextInt(chars.length())));
+        }
+        
+        return code.toString();
     }
 
     public void addDevice(Device device) {
@@ -47,6 +60,14 @@ public class Room {
                 .filter(device -> device.getId().equals(deviceId))
                 .findFirst()
                 .orElse(null);
+    }
+    
+    public String getHostId() {
+        return this.hostId;
+    }
+    
+    public String getId() {
+        return this.id;
     }
 
     public void updatePlaybackTime(long timestamp) {

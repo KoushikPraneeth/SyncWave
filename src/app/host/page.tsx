@@ -4,16 +4,15 @@ import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-  Mic,
-  Music,
-  Speaker,
-  Play,
-  Pause,
-  SkipForward,
-  Volume2,
-  RefreshCw,
-} from "lucide-react";
+// Replace Lucide React icons with React Icons
+import { FaMicrophone as Mic } from "react-icons/fa";
+import { FaMusic as Music } from "react-icons/fa";
+import { FaVolumeUp as Speaker } from "react-icons/fa";
+import { FaPlay as Play } from "react-icons/fa";
+import { FaPause as Pause } from "react-icons/fa";
+import { FaForward as SkipForward } from "react-icons/fa";
+import { FaVolumeDown as Volume2 } from "react-icons/fa";
+import { FaSync as RefreshCw } from "react-icons/fa";
 import { Slider } from "@/components/ui/slider";
 import { QRCode } from "@/components/qr-code";
 import { DeviceList } from "@/components/device-list";
@@ -87,20 +86,52 @@ export default function HostPage() {
     setIsCreatingRoom(true);
     try {
       const audioSyncClient = getAudioSyncClient();
-      await audioSyncClient.createRoom();
+      const room = await audioSyncClient.createRoom();
+      
+      // Update local state with room information
+      setRoomCode(room.code);
+      setIsConnected(true);
+      setIsCreatingRoom(false);
+      
+      toast({
+        title: "Room Created",
+        description: `Room code: ${room.code}`,
+      });
+      
+      return room;
     } catch (error) {
       console.error("Failed to create room:", error);
       setIsCreatingRoom(false);
       toast({
         title: "Error",
-        description: "Failed to create room",
+        description: typeof error === 'string' ? error : (error as Error).message || "Failed to create room",
         variant: "destructive",
       });
+      throw error; // Re-throw to allow handling in the useEffect
     }
   };
 
   useEffect(() => {
-    createRoom();
+    const initializeRoom = async () => {
+      try {
+        // First ensure we're connected to the WebSocket server
+        const audioSyncClient = getAudioSyncClient();
+        await audioSyncClient.connect();
+        
+        // Then create the room
+        await createRoom();
+      } catch (error) {
+        console.error("Failed to initialize room:", error);
+        setIsCreatingRoom(false);
+        toast({
+          title: "Error",
+          description: "Failed to initialize: " + (error as Error).message,
+          variant: "destructive",
+        });
+      }
+    };
+    
+    initializeRoom();
   }, []);
 
   const handlePlayPause = (playing: boolean, currentTime: number) => {
@@ -150,7 +181,21 @@ export default function HostPage() {
 
   const handleMicrophoneAccess = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Check if the browser supports getUserMedia
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error("Your browser doesn't support microphone access");
+      }
+      
+      // Request microphone access with specific constraints
+      const constraints = {
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      };
+      
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
       setAudioStream(stream);
 
       const newAudioSource: AudioSource = {
@@ -163,8 +208,19 @@ export default function HostPage() {
       try {
         const audioSyncClient = getAudioSyncClient();
         audioSyncClient.setAudioSource(newAudioSource);
+        
+        // Start processing the audio stream for transmission
+        if (audioSyncClient.processLiveAudioSource) {
+          const stopProcessing = audioSyncClient.processLiveAudioSource(stream);
+          // Store the stop function for cleanup
+          return () => {
+            stopProcessing();
+            stream.getTracks().forEach(track => track.stop());
+          };
+        }
       } catch (error) {
         console.error("Failed to set audio source:", error);
+        stream.getTracks().forEach(track => track.stop());
       }
 
       toast({
@@ -175,7 +231,8 @@ export default function HostPage() {
       console.error("Failed to access microphone:", error);
       toast({
         title: "Microphone Access Denied",
-        description: "Please allow microphone access to use this feature",
+        description: typeof error === 'object' && error !== null && 'message' in error ? 
+          String(error.message) : "Please allow microphone access to use this feature",
         variant: "destructive",
       });
     }
@@ -322,6 +379,13 @@ export default function HostPage() {
             <CardTitle>Playback Controls</CardTitle>
           </CardHeader>
           <CardContent>
+            {audioSource?.files && audioSource.files.length > 0 && (
+              <div className="mb-4 text-center">
+                <p className="text-sm font-medium">
+                  Now playing: {audioSource.files[0].name}
+                </p>
+              </div>
+            )}
             <AudioPlayer
               audioUrl={audioUrl || undefined}
               audioStream={audioStream || undefined}

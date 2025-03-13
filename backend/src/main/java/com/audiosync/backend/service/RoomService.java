@@ -4,6 +4,10 @@ import com.audiosync.backend.model.AudioSource;
 import com.audiosync.backend.model.ConnectionQuality;
 import com.audiosync.backend.model.Device;
 import com.audiosync.backend.model.Room;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -14,9 +18,17 @@ import java.util.stream.Collectors;
 
 @Service
 public class RoomService {
+    private static final Logger logger = LoggerFactory.getLogger(RoomService.class);
 
     private final Map<String, Room> rooms = new ConcurrentHashMap<>();
     private final Map<String, String> roomCodeToId = new ConcurrentHashMap<>();
+    
+    private AudioStreamingService audioStreamingService;
+    
+    @Autowired
+    public void setAudioStreamingService(@Lazy AudioStreamingService audioStreamingService) {
+        this.audioStreamingService = audioStreamingService;
+    }
 
     public Room createRoom(String hostId) {
         Room room = new Room(hostId);
@@ -159,6 +171,35 @@ public class RoomService {
         Room room = rooms.remove(roomId);
         if (room != null) {
             roomCodeToId.remove(room.getCode());
+            
+            // Clean up audio streaming resources for this room
+            if (audioStreamingService != null) {
+                audioStreamingService.cleanupRoom(roomId);
+                logger.info("Removed room and cleaned up audio resources: {}", roomId);
+            }
         }
+    }
+    
+    /**
+     * Removes rooms that have no active devices
+     */
+    public void cleanupEmptyRooms() {
+        List<String> emptyRoomIds = rooms.entrySet().stream()
+                .filter(entry -> entry.getValue().getDevices().stream().noneMatch(Device::isActive))
+                .map(Map.Entry::getKey)
+                .collect(Collectors.toList());
+        
+        emptyRoomIds.forEach(this::removeRoom);
+    }
+    
+    /**
+     * Returns all rooms created by a specific host
+     * @param hostId the ID of the host
+     * @return list of rooms created by the host
+     */
+    public List<Room> getRoomsByHost(String hostId) {
+        return rooms.values().stream()
+                .filter(room -> room.getHostId().equals(hostId))
+                .collect(Collectors.toList());
     }
 }
